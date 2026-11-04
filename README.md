@@ -4,31 +4,60 @@
 
 ---
 
+## 📥 Download da Versão Pronta para Uso (.EXE)
+
+Se você deseja apenas **usar o aplicativo** no Windows sem precisar instalar Python ou mexer em código:
+
+1. Acesse a aba de **[Releases](https://github.com/joaopaulo-rds/mosaico-thumbnail-pro/releases)** do repositório.
+2. Baixe o arquivo **`MosaicoThumbnailPro_Portatil.exe`**.
+3. Dê dois cliques para executar!
+
+---
+
+## ⚙️ Como o programa lida com o FFmpeg (Instalação 100% Automática)
+
+Para gerar os mosaicos de fotos em alta performance, o aplicativo utiliza o poder do **FFmpeg** e do **FFprobe**:
+
+- **Por que eles são necessários?**
+  - O `MosaicoThumbnailPro_Portatil.exe` cuida de toda a interface gráfica, cálculo de tempo e gerenciamento das tarefas.
+  - O `ffprobe.exe` é o inspetor que lê a duração, resolução e formato do vídeo em milissegundos.
+  - O `ffmpeg.exe` é o motor de alta velocidade que extrai com precisão cirúrgica os quadros do vídeo para montar o mosaico.
+
+- **Por que eles não vêm "embutidos" dentro do executável?**
+  - Para manter o seu aplicativo super leve (~50 MB) e rápido para abrir, em vez de gerar um arquivo pesado de mais de 230 MB.
+
+- **Preciso instalar o FFmpeg manualmente?**
+  - **Não!** Na primeira vez que você abrir o executável, se o FFmpeg não for detectado no computador, o aplicativo exibirá um aviso amigável na tela perguntando se você deseja baixá-lo automaticamente.
+  - Ao clicar em **"Sim"**, o próprio aplicativo baixa os arquivos oficiais e os salva na mesma pasta, pronto para funcionar para sempre (inclusive offline).
+
+---
+
 ## ✨ Funcionalidades
 
-- 🎨 **Interface Moderna (Dark Mode)**: Construída em PySide6 (Qt) com visual Catppuccin / Dark moderno e responsivo.
+- 🎨 **Interface Moderna (Dark Mode)**: Construída em PySide6 (Qt) com visual Dark moderno, limpo e responsivo.
 - 📂 **Arrastar e Soltar (Drag & Drop)**: Adicione vídeos individuais ou pastas inteiras com facilidade.
 - ⚡ **Processamento Rápido em Segundo Plano**: Extração paralela de quadros e renderização sem congelar a interface.
 - 📐 **Grades Flexíveis de Mosaico**: Suporte a diversos formatos de grade (4x4, 5x4, 6x4, 6x5, 6x6, etc.).
-- 🛠️ **Instalador Automático de FFmpeg**: Se o FFmpeg não for encontrado no sistema, o próprio aplicativo oferece para baixar e configurar automaticamente.
+- 🛠️ **Instalador Automático Integrado**: O próprio aplicativo gerencia o download e configuração do FFmpeg.
 - ⏱️ **Métricas em Tempo Real**: Barra de progresso com alta legibilidade, estimativa de tempo restante (ETA) e estatísticas de processamento.
-- 📦 **Compilação Portátil em 1 Clique**: Scripts prontos para empacotar o software em um executável `.exe` independente.
+- 📦 **Compilação Portátil em 1 Clique**: Scripts prontos para empacotar o software em um executável autônomo.
 
 ---
 
-## 📋 Pré-requisitos
+## 📋 Pré-requisitos (Apenas para Desenvolvedores)
 
+Se você for rodar ou modificar o código-fonte em Python:
 - **Python 3.10** ou superior instalado no Windows.
-- **FFmpeg** (detectado automaticamente ou instalado pelo próprio programa).
+- Dependências listadas no `requirements.txt`.
 
 ---
 
-## 🚀 Como Executar o Projeto
+## 🚀 Como Executar o Código-Fonte
 
 ### 1. Clonar o repositório
 ```bash
-git clone https://github.com/SEU-USUARIO/SEU-REPOSITORIO.git
-cd APP_THUMBNAIL_v1
+git clone https://github.com/joaopaulo-rds/mosaico-thumbnail-pro.git
+cd mosaico-thumbnail-pro
 ```
 
 ### 2. (Opcional) Criar e ativar um ambiente virtual
@@ -71,7 +100,7 @@ O executável final será salvo na pasta `dist/MosaicoThumbnailPro_Portatil.exe`
 ├── main.py                          # Ponto de entrada da aplicação
 ├── gui.py                           # Interface gráfica (PySide6)
 ├── processor.py                     # Motor de processamento de vídeo e FFmpeg
-├── utils.py                         # Utilitários auxiliares do sistema
+├── utils.py                         # Utilitários auxiliares do sistema e instalador do FFmpeg
 ├── requirements.txt                 # Dependências do projeto
 ├── icon.ico / icon.png              # Identidade visual e ícones
 ├── GERAR_EXECUTAVEL_COM_1_CLIQUE.bat # Script de automação de build (PyInstaller)

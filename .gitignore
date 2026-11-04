@@ -1,0 +1,33 @@
+# Byte-compiled / arquivos Python compilados
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pastas de Build e Executáveis (PyInstaller)
+build/
+dist/
+*.exe
+*.dll
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+ENV/
+
+# Configurações de IDEs e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Arquivos de sistema do Windows / macOS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Logs e arquivos temporários
+*.log
+*.tmp

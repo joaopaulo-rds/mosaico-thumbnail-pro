@@ -34,9 +34,15 @@ Para gerar os mosaicos de fotos em alta performance, o aplicativo utiliza o pode
 
 ## ✨ Funcionalidades
 
+- 📑 **Sistema com 3 Modos / Abas Independentes**:
+  - 🎬 **Converter para MP4**: Conversão otimizada (H.264/AAC) com a capa mosaico embutida no arquivo.
+  - 🎞️ **Converter para MKV**: Conversão Matroska com anexo oficial de capa (`cover.jpg` mime `image/jpeg`).
+  - 🖼️ **Apenas Imagem Mosaico**: Geração ultra-rápida de folhas de contato (JPG ou PNG com qualidade ajustável) sem alterar os arquivos de vídeo.
 - 🎨 **Interface Moderna (Dark Mode)**: Construída em PySide6 (Qt) com visual Dark moderno, limpo e responsivo.
 - 📂 **Arrastar e Soltar (Drag & Drop)**: Adicione vídeos individuais ou pastas inteiras com facilidade.
 - ⚡ **Processamento Rápido em Segundo Plano**: Extração paralela de quadros e renderização sem congelar a interface.
+- ⏭️ **Controle de Execução Flexível**: Opções para Pausar, Retomar, Cancelar ou **Pular o vídeo atual** sob demanda.
+- 🛡️ **Cão de Guarda Anti-Congelamento**: Monitoramento contínuo dos processos do FFmpeg para evitar travamentos em arquivos corrompidos.
 - 📐 **Grades Flexíveis de Mosaico**: Suporte a diversos formatos de grade (4x4, 5x4, 6x4, 6x5, 6x6, etc.).
 - 🛠️ **Instalador Automático Integrado**: O próprio aplicativo gerencia o download e configuração do FFmpeg.
 - ⏱️ **Métricas em Tempo Real**: Barra de progresso com alta legibilidade, estimativa de tempo restante (ETA) e estatísticas de processamento.

@@ -79,8 +79,11 @@ O arquivo executável final com o ícone oficial será gerado em:
 ## 📁 Estrutura dos Arquivos do Projeto
 
 - **`main.py`**: Ponto de entrada do aplicativo com configuração de nome e ícone.
-- **`gui.py`**: Interface gráfica moderna (PySide6 Dark Mode) com arrastar e soltar, estimativa de tempo (ETA), barra de progresso em tempo real com texto em preto alto contraste e seleção de grades (4x4, 5x4, 6x4, 6x5, 6x6, etc.).
-- **`processor.py`**: Motor de processamento em segundo plano (QThread), leitura de progresso do FFmpeg (`-progress pipe:1`), extração paralela de quadros, conversão para `.MP4` e restauração de datas.
+- **`gui.py`**: Interface gráfica moderna (PySide6 Dark Mode) com sistema de 3 abas independentes:
+  1. `🎬 Converter para MP4` (conversão H.264/AAC com capa embutida).
+  2. `🎞️ Converter para MKV` (conversão Matroska com anexo de capa `cover.jpg`).
+  3. `🖼️ Apenas Imagem Mosaico` (geração ultra-rápida de folhas de contato em JPG/PNG sem alterar vídeos).
+- **`processor.py`**: Motor de processamento em segundo plano (QThread), leitura de progresso do FFmpeg (`-progress pipe:1`), cão de guarda anti-congelamento, extração paralela de quadros, conversão para `.MP4` e `.MKV`, modo de imagem isolada e restauração de datas.
 - **`utils.py`**: Funções auxiliares (datas, notificação do Windows Shell `SHChangeNotify`, detector de executáveis).
 - **`icon.ico` / `icon.png`**: Ícones oficiais do aplicativo.
 - **`requirements.txt`**: Lista de dependências Python.

@@ -11,6 +11,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal, QMutex, QWaitCondition
 from PIL import Image, ImageDraw, ImageFont
 
+class VideoSkippedException(Exception):
+    """Exceção levantada quando o usuário solicita pular o vídeo atual."""
+    pass
+
 from utils import (
     get_file_dates,
     restore_file_dates,
@@ -128,7 +132,24 @@ def _extract_frame_task(task_args):
         return (i, frame_path, ts)
     return None
 
-def generate_mosaic(video_path, output_jpg_path, rows, cols, meta_info, progress_callback=None, cancel_checker=None):
+def get_unique_mosaic_path(base_dir, base_name, ext, on_conflict="overwrite"):
+    """
+    Gera o caminho de saída da imagem mosaico.
+    Se on_conflict == 'overwrite': sempre salva como 'Nome_mosaico.ext'.
+    Se on_conflict == 'number': se já existir, busca 'Nome_mosaico_1.ext', 'Nome_mosaico_2.ext', etc.
+    """
+    clean_ext = ext.lstrip(".").lower()
+    candidate = os.path.join(base_dir, f"{base_name}_mosaico.{clean_ext}")
+    if on_conflict != "number" or not os.path.exists(candidate):
+        return candidate
+    counter = 1
+    while True:
+        candidate = os.path.join(base_dir, f"{base_name}_mosaico_{counter}.{clean_ext}")
+        if not os.path.exists(candidate):
+            return candidate
+        counter += 1
+
+def generate_mosaic(video_path, output_jpg_path, rows, cols, meta_info, progress_callback=None, cancel_checker=None, image_format="jpg", quality=95, progress_range=(0, 25)):
     total_frames = rows * cols
     duration = meta_info.get("duration", 0)
     
@@ -140,6 +161,11 @@ def generate_mosaic(video_path, output_jpg_path, rows, cols, meta_info, progress
     
     temp_dir = tempfile.mkdtemp(prefix="thumb_frames_")
     flags = get_low_priority_creation_flags()
+    
+    p_start, p_end = progress_range
+    p_span = max(1, p_end - p_start)
+    p_extract = int(p_span * 0.7)
+    p_stitch = p_span - p_extract
     
     try:
         tasks = []
@@ -162,7 +188,7 @@ def generate_mosaic(video_path, output_jpg_path, rows, cols, meta_info, progress
                     frame_results[idx] = (f_path, ts)
                 completed_count += 1
                 if progress_callback:
-                    pct = int((completed_count / total_frames) * 15)
+                    pct = p_start + int((completed_count / total_frames) * p_extract)
                     progress_callback(pct, f"Capturando quadros {completed_count}/{total_frames}")
 
         frame_files = [f for f in frame_results if f is not None]
@@ -235,10 +261,14 @@ def generate_mosaic(video_path, output_jpg_path, rows, cols, meta_info, progress
             draw.text((box_x1 + box_px, box_y1 + box_px - 2), ts_text, fill=(255, 255, 255), font=font_time)
             
             if progress_callback:
-                progress_pct = 15 + int(((idx + 1) / total_frames) * 10)
+                progress_pct = p_start + p_extract + int(((idx + 1) / total_frames) * p_stitch)
                 progress_callback(progress_pct, f"Montando mosaico {idx+1}/{total_frames}")
 
-        canvas.save(output_jpg_path, "JPEG", quality=92)
+        clean_fmt = str(image_format).lower().replace(".", "").strip()
+        if clean_fmt == "png":
+            canvas.save(output_jpg_path, "PNG", optimize=True)
+        else:
+            canvas.save(output_jpg_path, "JPEG", quality=quality)
         return output_jpg_path
         
     finally:
@@ -279,14 +309,18 @@ def _kill_process_tree(process):
     except Exception:
         pass
 
-def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, compress=False, progress_callback=None, cancel_checker=None):
+def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, compress=False, progress_callback=None, cancel_checker=None, process_holder=None, target_format="mp4"):
     total_duration = meta_info.get("duration", 0) if meta_info else 0
     is_already_compressed = meta_info.get("is_already_compressed", False) if meta_info else False
     atime, mtime = get_file_dates(video_path)
     
+    target_format = target_format.lower().strip()
+    target_ext = f".{target_format}"
+    fmt_upper = target_format.upper()
+    
     dir_name, full_name = os.path.split(video_path)
     base_name, ext = os.path.splitext(full_name)
-    is_mp4 = ext.lower() == ".mp4"
+    is_target_format = ext.lower() == target_ext
     
     file_size = meta_info.get("size", os.path.getsize(video_path)) if meta_info else os.path.getsize(video_path)
     free_disk = get_free_disk_space_bytes(video_path)
@@ -298,8 +332,8 @@ def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, c
             f"Necessário pelo menos {format_bytes(required_space)} para processar este vídeo de forma segura."
         )
     
-    temp_output = os.path.join(dir_name, f"temp_{int(time.time())}_{base_name}.mp4")
-    final_mp4_path = os.path.join(dir_name, f"{base_name}.mp4")
+    temp_output = os.path.join(dir_name, f"temp_{int(time.time())}_{base_name}{target_ext}")
+    final_video_path = os.path.join(dir_name, f"{base_name}{target_ext}")
     
     flags = get_low_priority_creation_flags()
     threads = get_optimal_ffmpeg_threads()
@@ -307,31 +341,55 @@ def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, c
     stderr_log_path = os.path.join(tempfile.gettempdir(), f"ffmpeg_log_{int(time.time())}.txt")
     
     try:
-        # Adiciona flags vitais contra corrupção de timestamps em arquivos .TS (CAM4/Live Stream):
-        # -err_detect ignore_err, -fflags +genpts+discardcorrupt, -avoid_negative_ts make_zero, -max_muxing_queue_size 1024
-        cmd = [
-            get_ffmpeg_cmd(), "-y",
-            "-err_detect", "ignore_err",
-            "-fflags", "+genpts+discardcorrupt",
-            "-progress", "pipe:1",
-            "-i", video_path,
-            "-i", mosaic_jpg_path
-        ]
-        cmd.extend(["-map", "0:v:0?", "-map", "0:a?", "-map", "1:v:0"])
-        cmd.extend(["-c:v:1", "copy", "-disposition:v:1", "attached_pic"])
-        cmd.extend(["-dn"]) # Descarta fluxos de dados parasitas (ex: timed_id3) que corrompem mp4
-        cmd.extend(["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024"])
-        cmd.extend(["-metadata", "encoder=MosaicoThumbnailPro"])
-        cmd.extend(["-metadata", "comment=MosaicoThumbnailPro_Compressed"])
-        cmd.extend(["-threads", str(threads)])
+        if target_format == "mkv":
+            cmd = [
+                get_ffmpeg_cmd(), "-y",
+                "-err_detect", "ignore_err",
+                "-fflags", "+genpts+discardcorrupt",
+                "-progress", "pipe:1",
+                "-i", video_path,
+                "-attach", mosaic_jpg_path,
+                "-metadata:s:t", "mimetype=image/jpeg",
+                "-metadata:s:t", "filename=cover.jpg",
+                "-map", "0:v:0?", "-map", "0:a?",
+                "-dn",
+                "-avoid_negative_ts", "make_zero",
+                "-max_muxing_queue_size", "1024",
+                "-metadata", "encoder=MosaicoThumbnailPro",
+                "-metadata", "comment=MosaicoThumbnailPro_Compressed",
+                "-threads", str(threads)
+            ]
+        else: # mp4 padrão
+            cmd = [
+                get_ffmpeg_cmd(), "-y",
+                "-err_detect", "ignore_err",
+                "-fflags", "+genpts+discardcorrupt",
+                "-progress", "pipe:1",
+                "-i", video_path,
+                "-i", mosaic_jpg_path
+            ]
+            cmd.extend(["-map", "0:v:0?", "-map", "0:a?", "-map", "1:v:0"])
+            cmd.extend(["-c:v:1", "copy", "-disposition:v:1", "attached_pic"])
+            cmd.extend(["-dn"])
+            cmd.extend(["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024"])
+            cmd.extend(["-metadata", "encoder=MosaicoThumbnailPro"])
+            cmd.extend(["-metadata", "comment=MosaicoThumbnailPro_Compressed"])
+            cmd.extend(["-threads", str(threads)])
         
-        if is_mp4 and (is_already_compressed or not compress):
+        if is_target_format and (is_already_compressed or not compress):
             cmd.extend(["-c:v:0", "copy", "-c:a", "copy"])
             if progress_callback:
-                progress_callback(30, "Vídeo já comprimido anteriormente! Copiando ultra-rápido...")
+                progress_callback(30, f"Vídeo já comprimido anteriormente! Copiando para {fmt_upper} ultra-rápido...")
         else:
             crf_val = "24" if compress else "22"
-            cmd.extend(["-c:v:0", "libx264", "-crf", crf_val, "-preset", "superfast", "-c:a", "aac", "-af", "aresample=async=1"])
+            cmd.extend([
+                "-c:v:0", "libx264",
+                "-crf", crf_val,
+                "-preset", "superfast",
+                "-fps_mode", "vfr",
+                "-c:a", "aac",
+                "-af", "aresample=async=1"
+            ])
                 
         cmd.append(temp_output)
         
@@ -344,6 +402,8 @@ def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, c
                 creationflags=flags,
                 bufsize=1
             )
+            if process_holder:
+                process_holder(process)
             
             out_time_us = 0
             speed_val = 1.0
@@ -370,21 +430,27 @@ def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, c
             reader.start()
 
             last_heartbeat_time = time.time()
-            last_progress_time = time.time()
-            last_out_time_us = -1
-            STALL_TIMEOUT_SECONDS = 45 # 45 segundos de tolerância máxima para congelamentos
+            last_window_time = time.time()
+            last_window_out_time_us = 0
+            CHECK_WINDOW_SECONDS = 20 # Janela de 20s para aferir progresso real
 
             while True:
                 if cancel_checker:
                     t_before_check = time.time()
-                    if cancel_checker():
+                    check_res = cancel_checker()
+                    if check_res == "cancel" or check_res is True:
                         _kill_process_tree(process)
                         raise InterruptedError("Operação cancelada pelo usuário.")
-                    # Se cancel_checker demorou mais de 1s (ex: usuário pausou o app),
-                    # reseta os relógios para não disparar o watchdog ao despausar:
-                    if time.time() - t_before_check > 1.0:
+                    elif check_res == "skip":
+                        _kill_process_tree(process)
+                        raise VideoSkippedException("Vídeo pulado pelo usuário.")
+                        
+                    # Se cancel_checker demorou mais de 0.5s (ex: usuário pausou o app),
+                    # reseta os relógios para não disparar o watchdog indevidamente ao despausar:
+                    if time.time() - t_before_check > 0.5:
                         last_heartbeat_time = time.time()
-                        last_progress_time = time.time()
+                        last_window_time = time.time()
+                        last_window_out_time_us = out_time_us
                 
                 ret_code = process.poll()
                 
@@ -401,11 +467,7 @@ def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, c
                     
                     if line.startswith("out_time_us="):
                         try:
-                            parsed_out_time = int(line.split("=")[1])
-                            if parsed_out_time > last_out_time_us:
-                                last_out_time_us = parsed_out_time
-                                last_progress_time = curr_clock
-                            out_time_us = parsed_out_time
+                            out_time_us = int(line.split("=")[1])
                         except ValueError:
                             pass
                     elif line.startswith("speed="):
@@ -429,26 +491,30 @@ def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, c
                             if progress_callback:
                                 speed_disp = f"{speed_val:.1f}x"
                                 pct_disp = int(enc_ratio * 100)
-                                status_msg = "Processando Capa (Rápido)" if (is_mp4 and is_already_compressed) else f"Convertendo para MP4 ({pct_disp}% - Vel. {speed_disp})"
+                                status_msg = "Processando Capa (Rápido)" if (is_target_format and is_already_compressed) else f"Convertendo para {fmt_upper} ({pct_disp}% - Vel. {speed_disp})"
                                 progress_callback(pct, status_msg, item_eta)
                 else:
                     if ret_code is not None and stdout_queue.empty():
                         break
 
                 # === CÃO DE GUARDA DE TEMPO REAL (WATCHDOG INFALÍVEL) ===
-                # 1. Se o FFmpeg parar de responder por completo (silêncio total no pipe por > 45s)
-                if (curr_clock - last_heartbeat_time) > STALL_TIMEOUT_SECONDS:
+                # 1. Se o FFmpeg parar de responder por completo (silêncio total no pipe por > 25s)
+                if (curr_clock - last_heartbeat_time) > 25:
                     _kill_process_tree(process)
                     raise RuntimeError(
-                        f"Vídeo corrompido: FFmpeg travou e parou de responder por mais de {STALL_TIMEOUT_SECONDS}s (Silêncio total). Abortado automaticamente para proteger a fila."
+                        "Vídeo corrompido: FFmpeg travou e parou de responder por mais de 25s (Silêncio total). Abortado automaticamente para proteger a fila."
                     )
 
-                # 2. Se o FFmpeg entrar em loop infinito a 0.0x de velocidade sem avançar o vídeo por > 45s
-                if (curr_clock - last_progress_time) > STALL_TIMEOUT_SECONDS and speed_val <= 0.01:
-                    _kill_process_tree(process)
-                    raise RuntimeError(
-                        f"Vídeo corrompido: FFmpeg travou a 0.0x de velocidade por mais de {STALL_TIMEOUT_SECONDS}s. Abortado automaticamente para proteger a fila."
-                    )
+                # 2. Se a cada janela de 20s o vídeo avançar menos de 800ms de duração E velocidade for < 0.2x:
+                if (curr_clock - last_window_time) >= CHECK_WINDOW_SECONDS:
+                    video_advanced_us = out_time_us - last_window_out_time_us
+                    if video_advanced_us < 800000 and speed_val < 0.2:
+                        _kill_process_tree(process)
+                        raise RuntimeError(
+                            f"Vídeo corrompido: velocidade travada em {speed_val:.2f}x (vídeo não avança há {CHECK_WINDOW_SECONDS}s). Abortado automaticamente para proteger a fila."
+                        )
+                    last_window_time = curr_clock
+                    last_window_out_time_us = out_time_us
             
         if process.returncode != 0:
             stderr_out = ""
@@ -459,31 +525,36 @@ def embed_cover_and_process_video(video_path, mosaic_jpg_path, meta_info=None, c
             raise RuntimeError(f"Erro no FFmpeg ao converter/embutir capa:\n{clean_err}")
 
         if not os.path.exists(temp_output) or os.path.getsize(temp_output) == 0:
-            raise RuntimeError("O arquivo temporário MP4 não foi gerado pelo FFmpeg.")
+            raise RuntimeError(f"O arquivo temporário {fmt_upper} não foi gerado pelo FFmpeg.")
 
         if progress_callback:
-            progress_callback(95, "Finalizando arquivo MP4 e restaurando datas...", 1)
+            progress_callback(95, f"Finalizando arquivo {fmt_upper} e restaurando datas...", 1)
 
-        if not is_mp4 and os.path.exists(video_path) and os.path.abspath(video_path) != os.path.abspath(final_mp4_path):
+        if not is_target_format and os.path.exists(video_path) and os.path.abspath(video_path) != os.path.abspath(final_video_path):
             try:
                 os.remove(video_path)
             except Exception as e:
                 print(f"Aviso ao remover arquivo original ({video_path}): {e}")
 
-        if os.path.exists(final_mp4_path):
-            os.replace(temp_output, final_mp4_path)
+        if os.path.exists(final_video_path):
+            os.replace(temp_output, final_video_path)
         else:
-            os.replace(temp_output, final_mp4_path)
+            os.replace(temp_output, final_video_path)
 
-        restore_file_dates(final_mp4_path, atime, mtime)
-        refresh_windows_thumbnail_cache(final_mp4_path)
+        restore_file_dates(final_video_path, atime, mtime)
+        refresh_windows_thumbnail_cache(final_video_path)
         
         if progress_callback:
             progress_callback(100, "Concluído com sucesso!", 0)
 
-        return final_mp4_path
+        return final_video_path
         
     finally:
+        if process_holder:
+            try:
+                process_holder(None)
+            except Exception:
+                pass
         if os.path.exists(temp_output):
             try:
                 os.remove(temp_output)
@@ -507,8 +578,15 @@ class WorkerThread(QThread):
         self.settings = settings
         self.is_paused = False
         self.is_cancelled = False
+        self.is_skipped = False
+        self.current_process = None
         self.mutex = QMutex()
         self.pause_condition = QWaitCondition()
+
+    def set_current_process(self, proc):
+        self.mutex.lock()
+        self.current_process = proc
+        self.mutex.unlock()
 
     def pause(self):
         self.mutex.lock()
@@ -524,28 +602,51 @@ class WorkerThread(QThread):
     def cancel(self):
         self.mutex.lock()
         self.is_cancelled = True
+        proc = self.current_process
         if self.is_paused:
             self.is_paused = False
             self.pause_condition.wakeAll()
         self.mutex.unlock()
+        if proc:
+            _kill_process_tree(proc)
+
+    def skip_current(self):
+        self.mutex.lock()
+        self.is_skipped = True
+        proc = self.current_process
+        if self.is_paused:
+            self.is_paused = False
+            self.pause_condition.wakeAll()
+        self.mutex.unlock()
+        if proc:
+            _kill_process_tree(proc)
 
     def check_pause_or_cancel(self):
         self.mutex.lock()
         while self.is_paused:
             self.pause_condition.wait(self.mutex)
         cancelled = self.is_cancelled
+        skipped = self.is_skipped
         self.mutex.unlock()
-        return cancelled
+        if cancelled:
+            return "cancel"
+        if skipped:
+            return "skip"
+        return "continue"
 
     def run(self):
         apply_low_priority_to_current_process()
         cleanup_leftover_temp_files()
         
+        mode = self.settings.get("mode", "mp4").lower()
         rows = self.settings.get("rows", 6)
         cols = self.settings.get("cols", 4)
         compress = self.settings.get("compress", True)
         save_mosaic_separately = self.settings.get("save_mosaic", False)
         custom_mosaic_dir = self.settings.get("mosaic_dir", None)
+        image_fmt = self.settings.get("image_format", "jpg").lower()
+        on_conflict = self.settings.get("on_conflict", "overwrite").lower()
+        quality = self.settings.get("quality", 95)
         
         total_items = len(self.queue_items)
         completed_times = []
@@ -561,36 +662,49 @@ class WorkerThread(QThread):
             video_path = item["path"]
             item_num = idx_item + 1
             
-            if self.check_pause_or_cancel():
+            self.mutex.lock()
+            self.is_skipped = False
+            self.current_process = None
+            self.mutex.unlock()
+            
+            chk_status = self.check_pause_or_cancel()
+            if chk_status == "cancel":
                 break
+            elif chk_status == "skip":
+                self.item_finished.emit(video_path, False, "⏭️ Pulado")
+                continue
                 
             item_start_time = time.time()
             self.item_started.emit(video_path)
             
-            avg_time = (sum(completed_times) / len(completed_times)) if completed_times else 30
+            default_avg = 4 if mode == "mosaic_only" else 30
+            avg_time = (sum(completed_times) / len(completed_times)) if completed_times else default_avg
             items_remaining = total_items - idx_item
             est_item_eta = int(avg_time)
             est_queue_eta = int(avg_time * items_remaining)
             
             self.item_progress.emit(video_path, 2, "Iniciando análise...", est_item_eta, est_queue_eta, item_num, total_items)
             
+            mosaic_target_path = None
             try:
                 meta_info = probe_video(video_path)
                 initial_size = meta_info.get("size", os.path.getsize(video_path))
                 
-                if self.check_pause_or_cancel():
+                chk_status = self.check_pause_or_cancel()
+                if chk_status == "cancel":
                     break
+                elif chk_status == "skip":
+                    self.item_finished.emit(video_path, False, "⏭️ Pulado")
+                    continue
                     
                 dir_name, full_name = os.path.split(video_path)
                 base_name, _ = os.path.splitext(full_name)
                 
                 if custom_mosaic_dir and os.path.exists(custom_mosaic_dir):
-                    mosaic_dir = custom_mosaic_dir
+                    target_dir = custom_mosaic_dir
                 else:
-                    mosaic_dir = dir_name
-                    
-                mosaic_jpg_path = os.path.join(mosaic_dir, f"{base_name}_mosaico.jpg")
-                
+                    target_dir = dir_name
+
                 def progress_cb(pct, status, override_item_eta=None):
                     elapsed_so_far = time.time() - item_start_time
                     if override_item_eta is not None:
@@ -602,32 +716,78 @@ class WorkerThread(QThread):
                         
                     calc_queue_eta = calc_item_eta + int(avg_time * (items_remaining - 1))
                     self.item_progress.emit(video_path, pct, status, calc_item_eta, calc_queue_eta, item_num, total_items)
+
+                # ==============================================================
+                # MODO 1: APENAS IMAGEM MOSAICO (SEM CONVERTER VÍDEO)
+                # ==============================================================
+                if mode == "mosaic_only":
+                    mosaic_target_path = get_unique_mosaic_path(target_dir, base_name, image_fmt, on_conflict)
                     
+                    generate_mosaic(
+                        video_path=video_path,
+                        output_jpg_path=mosaic_target_path,
+                        rows=rows,
+                        cols=cols,
+                        meta_info=meta_info,
+                        progress_callback=progress_cb,
+                        cancel_checker=lambda: self.check_pause_or_cancel() != "continue",
+                        image_format=image_fmt,
+                        quality=quality,
+                        progress_range=(5, 95)
+                    )
+                    
+                    progress_cb(100, "Mosaico gerado com sucesso!", 0)
+                    success_count += 1
+                    item_duration = time.time() - item_start_time
+                    completed_times.append(item_duration)
+                    self.item_finished.emit(mosaic_target_path, True, "Mosaico gerado com sucesso")
+                    continue
+
+                # ==============================================================
+                # MODO 2: CONVERSÃO DE VÍDEO (MP4 OU MKV) COM CAPA EMBUTIDA
+                # ==============================================================
+                mosaic_target_path = os.path.join(target_dir, f"{base_name}_mosaico.jpg")
+                
                 generate_mosaic(
                     video_path=video_path,
-                    output_jpg_path=mosaic_jpg_path,
+                    output_jpg_path=mosaic_target_path,
                     rows=rows,
                     cols=cols,
                     meta_info=meta_info,
                     progress_callback=progress_cb,
-                    cancel_checker=self.check_pause_or_cancel
+                    cancel_checker=lambda: self.check_pause_or_cancel() != "continue",
+                    image_format="jpg",
+                    quality=92,
+                    progress_range=(0, 25)
                 )
                 
-                if self.check_pause_or_cancel():
+                chk_status = self.check_pause_or_cancel()
+                if chk_status == "cancel":
                     break
+                elif chk_status == "skip":
+                    if not save_mosaic_separately and mosaic_target_path and os.path.exists(mosaic_target_path):
+                        try:
+                            os.remove(mosaic_target_path)
+                        except Exception:
+                            pass
+                    self.item_finished.emit(video_path, False, "⏭️ Pulado")
+                    continue
                     
+                target_fmt = "mkv" if mode == "mkv" else "mp4"
                 final_video_path = embed_cover_and_process_video(
                     video_path=video_path,
-                    mosaic_jpg_path=mosaic_jpg_path,
+                    mosaic_jpg_path=mosaic_target_path,
                     meta_info=meta_info,
                     compress=compress,
                     progress_callback=progress_cb,
-                    cancel_checker=self.check_pause_or_cancel
+                    cancel_checker=self.check_pause_or_cancel,
+                    process_holder=self.set_current_process,
+                    target_format=target_fmt
                 )
                 
-                if not save_mosaic_separately and os.path.exists(mosaic_jpg_path):
+                if not save_mosaic_separately and mosaic_target_path and os.path.exists(mosaic_target_path):
                     try:
-                        os.remove(mosaic_jpg_path)
+                        os.remove(mosaic_target_path)
                     except Exception:
                         pass
                         
@@ -639,17 +799,26 @@ class WorkerThread(QThread):
                 item_duration = time.time() - item_start_time
                 completed_times.append(item_duration)
                 
-                self.item_finished.emit(final_video_path, True, "Concluído com sucesso")
+                self.item_finished.emit(final_video_path, True, f"Concluído com sucesso ({target_fmt.upper()})")
                 
             except InterruptedError:
                 self.item_finished.emit(video_path, False, "Cancelado")
                 break
+            except VideoSkippedException:
+                if not save_mosaic_separately and mosaic_target_path and os.path.exists(mosaic_target_path):
+                    try:
+                        os.remove(mosaic_target_path)
+                    except Exception:
+                        pass
+                self.item_finished.emit(video_path, False, "⏭️ Pulado")
+                continue
             except Exception as e:
                 error_count += 1
                 error_list.append((os.path.basename(video_path), str(e)))
                 self.item_finished.emit(video_path, False, str(e))
                 
         summary_data = {
+            "mode": mode,
             "total_items": total_items,
             "success_count": success_count,
             "error_count": error_count,
